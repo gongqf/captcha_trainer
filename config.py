@@ -7,6 +7,7 @@ import json
 import platform
 import re
 import yaml
+import threading
 from category import *
 from constants import *
 from exception import exception, ConfigException
@@ -21,7 +22,7 @@ PATH_SPLIT = "/"
 MODEL_CONFIG_NAME = "model.yaml"
 IGNORE_FILES = ['.DS_Store']
 
-CORE_VERSION = '20200530'
+CORE_VERSION = '2020705'
 
 NETWORK_MAP = {
     'CNNX': CNNNetwork.CNNX,
@@ -136,6 +137,7 @@ class PretreatmentEntity:
     blend_frames: object = -1
     replace_transparent: bool = True
     horizontal_stitching: bool = False
+    exec_map: dict = {}
 
 
 class ModelConfig:
@@ -155,6 +157,7 @@ class ModelConfig:
     """FIELD PARAM - IMAGE"""
     field_root: dict
     category_param: list or str
+    category_param_text: str
     image_channel: int
     image_width: int
     image_height: int
@@ -227,6 +230,7 @@ class ModelConfig:
     pre_horizontal_stitching: bool
     pre_concat_frames: object
     pre_blend_frames: object
+    pre_exec_map = dict = {}
 
     """COMPILE_MODEL"""
     compile_model_path: str
@@ -278,7 +282,10 @@ class ModelConfig:
         """FIELD PARAM - IMAGE"""
         self.field_root = self.conf['FieldParam']
         self.category_param = self.field_root.get('Category')
-
+        if isinstance(self.category_param, list):
+            self.category_param_text = json.dumps(self.category_param, ensure_ascii=False)
+        elif isinstance(self.category_param, str):
+            self.category_param_text = self.category_param
         self.image_channel = self.field_root.get('ImageChannel')
         self.image_width = self.field_root.get('ImageWidth')
         self.image_height = self.field_root.get('ImageHeight')
@@ -366,6 +373,8 @@ class ModelConfig:
         self.pre_horizontal_stitching = self.pretreatment_root.get("HorizontalStitching")
         self.pre_concat_frames = self.pretreatment_root.get('ConcatFrames')
         self.pre_blend_frames = self.pretreatment_root.get('BlendFrames')
+        self.pre_exec_map = self.pretreatment_root.get('ExecuteMap')
+        self.pre_exec_map = self.pre_exec_map if self.pre_exec_map else {}
 
         """COMPILE_MODEL"""
         self.compile_model_path = os.path.join(self.output_path, 'graph')
@@ -571,6 +580,7 @@ class ModelConfig:
                 Pre_HorizontalStitching=self.pre_horizontal_stitching,
                 Pre_ConcatFrames=self.pre_concat_frames,
                 Pre_BlendFrames=self.pre_blend_frames,
+                Pre_ExecuteMap=self.pre_exec_map
             )
         with open(model_conf_path if model_conf_path else self.model_conf_path, "w", encoding="utf8") as f:
             f.write(model)
@@ -609,6 +619,11 @@ class ModelConfig:
             self.category_param = json.dumps(argv.get('Category'), ensure_ascii=False)
         else:
             self.category_param = argv.get('Category')
+
+        if isinstance(self.category_param, list):
+            self.category_param_text = json.dumps(self.category_param, ensure_ascii=False)
+        elif isinstance(self.category_param, str):
+            self.category_param_text = self.category_param
 
         self.resize = argv.get('Resize')
         self.image_channel = argv.get('ImageChannel')
@@ -649,12 +664,12 @@ class ModelConfig:
         self.da_random_blank = argv.get('DA_RandomBlank')
         self.da_random_transition = argv.get('DA_RandomTransition')
         self.da_random_captcha = argv.get('DA_RandomCaptcha')
-        print(self.da_random_captcha)
         self.pre_binaryzation = argv.get('Pre_Binaryzation')
         self.pre_replace_transparent = argv.get('Pre_ReplaceTransparent')
         self.pre_horizontal_stitching = argv.get('Pre_HorizontalStitching')
         self.pre_concat_frames = argv.get('Pre_ConcatFrames')
         self.pre_blend_frames = argv.get('Pre_BlendFrames')
+        self.pre_exec_map = argv.get('Pre_ExecuteMap')
 
     def println(self):
         print('Loading Configuration...')

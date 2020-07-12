@@ -17,9 +17,12 @@ from make_dataset import DataSets
 from predict_testing import Predict
 from trains import Trains
 from category import category_extract, SIMPLE_CATEGORY_MODEL
+from utils.category_frequency_statistics import fetch_category_list
 from gui.utils import LayoutGUI
 from gui.data_augmentation import DataAugmentationDialog
 from gui.pretreatment import PretreatmentDialog
+
+NOT_EDITABLE_MSG = "ONLY SUPPORT MODIFICATION FROM FILE"
 
 
 class Wizard:
@@ -30,7 +33,8 @@ class Wizard:
     data_augmentation_entity = DataAugmentationEntity()
     pretreatment_entity = PretreatmentEntity()
     extract_regex = ".*?(?=_)"
-    label_from = LabelFrom.FileName
+    label_split = ""
+    model_conf: ModelConfig = None
 
     def __init__(self, parent: tk.Tk):
         self.layout = {
@@ -68,11 +72,17 @@ class Wizard:
         self.help_menu = tk.Menu(self.menubar, tearoff=False)
         self.system_menu = tk.Menu(self.menubar, tearoff=False)
         self.edit_var = tk.DoubleVar()
+        self.label_from_var = tk.StringVar()
+
         self.memory_usage_menu = tk.Menu(self.menubar, tearoff=False)
         self.memory_usage_menu.add_radiobutton(label="50%", variable=self.edit_var, value=0.5)
         self.memory_usage_menu.add_radiobutton(label="60%", variable=self.edit_var, value=0.6)
         self.memory_usage_menu.add_radiobutton(label="70%", variable=self.edit_var, value=0.7)
         self.memory_usage_menu.add_radiobutton(label="80%", variable=self.edit_var, value=0.8)
+
+        self.label_from_menu = tk.Menu(self.menubar, tearoff=False)
+        self.label_from_menu.add_radiobutton(label="FileName", variable=self.label_from_var, value='FileName')
+        self.label_from_menu.add_radiobutton(label="TXT", variable=self.label_from_var, value='TXT')
 
         self.menubar.add_cascade(label="System", menu=self.system_menu)
         self.system_menu.add_cascade(label="Memory Usage", menu=self.memory_usage_menu)
@@ -81,6 +91,9 @@ class Wizard:
         self.data_menu.add_command(label="Pretreatment", command=lambda: self.popup_pretreatment())
         self.data_menu.add_separator()
         self.data_menu.add_command(label="Clear Dataset", command=lambda: self.clear_dataset())
+        self.data_menu.add_separator()
+        self.data_menu.add_cascade(label="Label From", menu=self.label_from_menu)
+        self.data_menu.add_command(label="Fetch Category", command=lambda: self.fetch_category())
         self.menubar.add_cascade(label="Data", menu=self.data_menu)
 
         self.help_menu.add_command(label="About", command=lambda: self.popup_about())
@@ -595,7 +608,11 @@ class Wizard:
             sequence="<Button-1>",
             func=lambda x: self.fetch_projects()
         )
-        self.comb_project_name.bind("<<ComboboxSelected>>", lambda x: self.read_conf(x))
+
+        def read_conf(event):
+            threading.Thread(target=self.read_conf).start()
+
+        self.comb_project_name.bind("<<ComboboxSelected>>", read_conf)
 
         # 保存配置 - 按钮
         self.btn_save_conf = ttk.Button(
@@ -861,7 +878,7 @@ class Wizard:
         current_project_name = self.comb_project_name.get()
         if len(current_project_name) > 0 and current_project_name not in self.project_names:
             self.extract_regex = ".*?(?=_)"
-            self.label_from = LabelFrom.FileName
+            self.label_from_var.set('FileName')
             self.sample_map[DatasetType.Directory][RunMode.Trains].delete(0, tk.END)
             self.sample_map[DatasetType.Directory][RunMode.Validation].delete(0, tk.END)
             self.category_val.set("")
@@ -870,6 +887,8 @@ class Wizard:
             self.current_project = self.comb_project_name.get()
             self.update_dataset_files_path(mode=RunMode.Trains)
             self.update_dataset_files_path(mode=RunMode.Validation)
+            self.data_augmentation_entity = DataAugmentationEntity()
+            self.pretreatment_entity = PretreatmentEntity()
 
     @property
     def project_path(self):
@@ -1025,7 +1044,8 @@ class Wizard:
         result = src.get(key)
         return result if result else default
 
-    def read_conf(self, event):
+    def read_conf(self):
+        print('Reading configuration...')
         selected = self.comb_project_name.get()
         self.current_project = selected
         model_conf = ModelConfig(selected)
@@ -1048,16 +1068,8 @@ class Wizard:
         self.comb_loss.set(model_conf.loss_func_param)
 
         self.extract_regex = model_conf.extract_regex
-        self.label_from = model_conf.label_from
-
-        if isinstance(model_conf.category_param, list):
-            self.category_entry['state'] = tk.NORMAL
-            self.comb_category.set('CUSTOMIZED')
-            self.category_val.set(json.dumps(model_conf.category_param, ensure_ascii=False))
-        else:
-            self.category_val.set("")
-            self.category_entry['state'] = tk.DISABLED
-            self.comb_category.set(model_conf.category_param)
+        self.label_split = model_conf.label_split
+        self.label_from_var.set(model_conf.label_from.value)
 
         self.comb_optimizer.set(model_conf.neu_optimizer_param)
         self.learning_rate_spin.set(model_conf.trains_learning_rate)
@@ -1090,12 +1102,29 @@ class Wizard:
         self.pretreatment_entity.horizontal_stitching = model_conf.pre_horizontal_stitching
         self.pretreatment_entity.concat_frames = model_conf.pre_concat_frames
         self.pretreatment_entity.blend_frames = model_conf.pre_blend_frames
+        self.pretreatment_entity.exec_map = model_conf.pre_exec_map
 
         for dataset_validation in self.get_param(model_conf.validation_path, DatasetType.TFRecords, default=[]):
             self.dataset_validation_listbox.insert(tk.END, dataset_validation)
         for dataset_train in self.get_param(model_conf.trains_path, DatasetType.TFRecords, default=[]):
             self.dataset_train_listbox.insert(tk.END, dataset_train)
-        return model_conf
+
+        # print('Loading category configuration...')
+        if isinstance(model_conf.category_param, list):
+            self.category_entry['state'] = tk.DISABLED
+            self.comb_category.set('CUSTOMIZED')
+            if len(model_conf.category_param) > 1000:
+                self.category_val.set(NOT_EDITABLE_MSG)
+            else:
+                self.category_val.set(model_conf.category_param_text)
+                self.category_entry['state'] = tk.NORMAL
+        else:
+            self.category_val.set("")
+            self.category_entry['state'] = tk.DISABLED
+            self.comb_category.set(model_conf.category_param)
+        # print('Loading configuration is completed.')
+        self.model_conf = model_conf
+        return self.model_conf
 
     @property
     def validation_batch_size(self):
@@ -1136,9 +1165,9 @@ class Wizard:
             ReplaceTransparent=False,
             HorizontalStitching=False,
             OutputSplit='',
-            LabelFrom=self.label_from.value,
+            LabelFrom=self.label_from_var.get(),
             ExtractRegex=self.extract_regex,
-            LabelSplit='',
+            LabelSplit=self.label_split,
             DatasetTrainsPath=self.dataset_value(
                 dataset_type=DatasetType.TFRecords, mode=RunMode.Trains
             ),
@@ -1181,6 +1210,7 @@ class Wizard:
             Pre_HorizontalStitching=self.pretreatment_entity.horizontal_stitching,
             Pre_ConcatFrames=self.pretreatment_entity.concat_frames,
             Pre_BlendFrames=self.pretreatment_entity.blend_frames,
+            Pre_ExecuteMap=self.pretreatment_entity.exec_map
         )
         model_conf.update()
         return model_conf
@@ -1276,6 +1306,8 @@ class Wizard:
             return None
         if comb_selected == 'CUSTOMIZED':
             category_value = self.category_entry.get()
+            if category_value == NOT_EDITABLE_MSG:
+                return self.model_conf.category_param_text
             category_value = category_value.replace("'", '"') if "'" in category_value else category_value
             category_value = self.json_filter(category_value, str)
         else:
@@ -1340,6 +1372,7 @@ class Wizard:
             status = 'Training failure'
         self.button_state(self.btn_training, tk.NORMAL)
         self.button_state(self.btn_stop, tk.DISABLED)
+        self.comb_project_name['state'] = tk.NORMAL
         self.is_task_running = False
         tk.messagebox.showinfo('Training Status', status)
 
@@ -1377,6 +1410,7 @@ class Wizard:
         model_conf = self.save_conf()
         if not self.check_dataset(model_conf):
             return
+        self.comb_project_name['state'] = tk.DISABLED
         self.job = self.threading_exec(
             lambda: self.training_task()
         )
@@ -1433,6 +1467,26 @@ class Wizard:
             if v == min_index:
                 return k
 
+    def fetch_category(self):
+        if self.model_conf.label_from == LabelFrom.TXT or self.label_from_var.get() == LabelFrom.TXT.value:
+            messagebox.showerror(
+                "Error!", "The Label From is currently not supported."
+            )
+            return
+        self.save_conf()
+        category_list = fetch_category_list(self.model_conf, is_json=True)
+        if not category_list:
+            return
+        self.comb_category.current(0)
+        if len(category_list) > 1000:
+            self.category_entry['state'] = tk.DISABLED
+            self.category_val.set(NOT_EDITABLE_MSG)
+            self.model_conf.category_param_text = category_list
+        else:
+            self.category_entry['state'] = tk.NORMAL
+            self.category_val.set(category_list)
+        self.save_conf()
+
     def fetch_sample(self, dataset_path):
         file_names = os.listdir(dataset_path[0])[0:100]
         category = list()
@@ -1445,14 +1499,15 @@ class Wizard:
                 len_label = len(label)
                 category.extend(label)
 
-        category_pram = self.closest_category(category)
-        if not category_pram:
-            return
-        self.comb_category.set(category_pram)
         size = PilImage.open(os.path.join(dataset_path[0], file_names[0])).size
         self.size_val.set(json.dumps(size))
         self.resize_val.set(json.dumps(size))
         self.label_num_spin.set(len_label)
+        if not self.category_val.get() or self.category_val.get() != NOT_EDITABLE_MSG:
+            category_pram = self.closest_category(category)
+            if not category_pram:
+                return
+            self.comb_category.set(category_pram)
 
     def listbox_delete_item_callback(self, event, listbox: tk.Listbox):
         i = listbox.curselection()[0]
